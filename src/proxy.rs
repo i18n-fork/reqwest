@@ -68,6 +68,8 @@ pub struct NoProxy {
 struct Extra {
     auth: Option<HeaderValue>,
     misc: Option<HeaderMap>,
+    #[cfg(feature = "proxy_ss")]
+    ss: Option<Url>,
 }
 
 // ===== Internal =====
@@ -125,10 +127,16 @@ impl<S: IntoUrl> IntoProxy for S {
         match self.as_str().into_url() {
             Ok(mut url) => {
                 // If the scheme is a SOCKS protocol and no port is specified, set the default
-                if url.port().is_none()
-                    && matches!(url.scheme(), "socks4" | "socks4a" | "socks5" | "socks5h")
-                {
-                    let _ = url.set_port(Some(1080));
+                if url.port().is_none() {
+                    let needs_default_port = match url.scheme() {
+                        "socks4" | "socks4a" | "socks5" | "socks5h" => true,
+                        #[cfg(feature = "proxy_ss")]
+                        "ss" => true,
+                        _ => false,
+                    };
+                    if needs_default_port {
+                        let _ = url.set_port(Some(1080));
+                    }
                 }
                 Ok(url)
             }
@@ -266,6 +274,8 @@ impl Proxy {
             extra: Extra {
                 auth: None,
                 misc: None,
+                #[cfg(feature = "proxy_ss")]
+                ss: None,
             },
             intercept,
             no_proxy: None,
@@ -372,39 +382,139 @@ impl Proxy {
         let maybe_has_http_auth;
         let maybe_has_http_custom_headers;
 
+        #[cfg(not(feature = "proxy_ss"))]
+        let extra = extra;
+        #[cfg(feature = "proxy_ss")]
+        let mut extra = extra;
         let inner = match intercept {
             Intercept::All(url) => {
                 maybe_has_http_auth = cache_maybe_has_http_auth(&url, &extra.auth);
                 maybe_has_http_custom_headers =
                     cache_maybe_has_http_custom_headers(&url, &extra.misc);
-                Matcher_::Util(
-                    matcher::Matcher::builder()
-                        .all(String::from(url))
-                        .no(no_proxy.as_ref().map(|n| n.inner.as_ref()).unwrap_or(""))
-                        .build(),
-                )
+
+                #[cfg(not(feature = "proxy_ss"))]
+                let (handled, matcher) = (false, None);
+                #[cfg(feature = "proxy_ss")]
+                let (mut handled, mut matcher) = (false, None);
+
+                #[cfg(feature = "proxy_ss")]
+                {
+                    if url.scheme() == "ss" {
+                        extra.ss = Some(url.clone());
+
+                        // 将 ss:// URL 转换为 http:// URL 来欺骗 hyper-util 的匹配器
+                        let fake_http_url = format!(
+                            "http://{}:{}",
+                            url.host_str().unwrap_or("localhost"),
+                            url.port().unwrap_or(1080)
+                        );
+
+                        matcher = Some(Matcher_::Util(
+                            matcher::Matcher::builder()
+                                .all(fake_http_url)
+                                .no(no_proxy.as_ref().map(|n| n.inner.as_ref()).unwrap_or(""))
+                                .build(),
+                        ));
+                        handled = true;
+                    }
+                }
+
+                if handled {
+                    matcher.unwrap()
+                } else {
+                    Matcher_::Util(
+                        matcher::Matcher::builder()
+                            .all(String::from(url))
+                            .no(no_proxy.as_ref().map(|n| n.inner.as_ref()).unwrap_or(""))
+                            .build(),
+                    )
+                }
             }
             Intercept::Http(url) => {
                 maybe_has_http_auth = cache_maybe_has_http_auth(&url, &extra.auth);
                 maybe_has_http_custom_headers =
                     cache_maybe_has_http_custom_headers(&url, &extra.misc);
-                Matcher_::Util(
-                    matcher::Matcher::builder()
-                        .http(String::from(url))
-                        .no(no_proxy.as_ref().map(|n| n.inner.as_ref()).unwrap_or(""))
-                        .build(),
-                )
+
+                #[cfg(not(feature = "proxy_ss"))]
+                let (handled, matcher) = (false, None);
+                #[cfg(feature = "proxy_ss")]
+                let (mut handled, mut matcher) = (false, None);
+
+                #[cfg(feature = "proxy_ss")]
+                {
+                    if url.scheme() == "ss" {
+                        extra.ss = Some(url.clone());
+
+                        // 将 ss:// URL 转换为 http:// URL 来欺骗 hyper-util 的匹配器
+                        let fake_http_url = format!(
+                            "http://{}:{}",
+                            url.host_str().unwrap_or("localhost"),
+                            url.port().unwrap_or(1080)
+                        );
+
+                        matcher = Some(Matcher_::Util(
+                            matcher::Matcher::builder()
+                                .http(fake_http_url)
+                                .no(no_proxy.as_ref().map(|n| n.inner.as_ref()).unwrap_or(""))
+                                .build(),
+                        ));
+                        handled = true;
+                    }
+                }
+
+                if handled {
+                    matcher.unwrap()
+                } else {
+                    Matcher_::Util(
+                        matcher::Matcher::builder()
+                            .http(String::from(url))
+                            .no(no_proxy.as_ref().map(|n| n.inner.as_ref()).unwrap_or(""))
+                            .build(),
+                    )
+                }
             }
             Intercept::Https(url) => {
                 maybe_has_http_auth = cache_maybe_has_http_auth(&url, &extra.auth);
                 maybe_has_http_custom_headers =
                     cache_maybe_has_http_custom_headers(&url, &extra.misc);
-                Matcher_::Util(
-                    matcher::Matcher::builder()
-                        .https(String::from(url))
-                        .no(no_proxy.as_ref().map(|n| n.inner.as_ref()).unwrap_or(""))
-                        .build(),
-                )
+
+                #[cfg(not(feature = "proxy_ss"))]
+                let (handled, matcher) = (false, None);
+                #[cfg(feature = "proxy_ss")]
+                let (mut handled, mut matcher) = (false, None);
+
+                #[cfg(feature = "proxy_ss")]
+                {
+                    if url.scheme() == "ss" {
+                        extra.ss = Some(url.clone());
+
+                        // 将 ss:// URL 转换为 https:// URL 来欺骗 hyper-util 的匹配器
+                        let fake_https_url = format!(
+                            "https://{}:{}",
+                            url.host_str().unwrap_or("localhost"),
+                            url.port().unwrap_or(1080)
+                        );
+
+                        matcher = Some(Matcher_::Util(
+                            matcher::Matcher::builder()
+                                .https(fake_https_url)
+                                .no(no_proxy.as_ref().map(|n| n.inner.as_ref()).unwrap_or(""))
+                                .build(),
+                        ));
+                        handled = true;
+                    }
+                }
+
+                if handled {
+                    matcher.unwrap()
+                } else {
+                    Matcher_::Util(
+                        matcher::Matcher::builder()
+                            .https(String::from(url))
+                            .no(no_proxy.as_ref().map(|n| n.inner.as_ref()).unwrap_or(""))
+                            .build(),
+                    )
+                }
             }
             Intercept::Custom(mut custom) => {
                 maybe_has_http_auth = true; // never know
@@ -516,6 +626,8 @@ impl Matcher {
             extra: Extra {
                 auth: None,
                 misc: None,
+                #[cfg(feature = "proxy_ss")]
+                ss: None,
             },
             // maybe env vars have auth!
             maybe_has_http_auth: true,
@@ -604,6 +716,11 @@ impl Intercepted {
     #[cfg(feature = "socks")]
     pub(crate) fn raw_auth(&self) -> Option<(&str, &str)> {
         self.inner.raw_auth()
+    }
+
+    #[cfg(feature = "proxy_ss")]
+    pub(crate) fn ss(&self) -> Option<&Url> {
+        self.extra.ss.as_ref()
     }
 }
 
